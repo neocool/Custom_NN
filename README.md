@@ -58,8 +58,10 @@ nn.backward(gradients)
 optimizer = Adam(nn.parameters, lr=0.001)
 optimizer.step(gradients)
 
-Contributing
+```
+
+## Contributing
 Please feel free to submit issues and pull requests for any bug fixes, improvements, or new features.
 
-License
+## License
 This project is licensed under the MIT License. See the LICENSE file for more details.
