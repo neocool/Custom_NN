@@ -22,10 +22,7 @@ To use the Custom Decimal Neural Network in your project, simply import the nece
 Here's a sample usage:
 
 ```python
-from decimal_nn import NeuralNetwork, DenseLayer, Sigmoid
-from decimal_loss import L1Loss
-from decimal_optimizer import Adam
-from decimal_utils import nntensor
+import NN_Module
 
 # Create a neural network with a Dense layer and Sigmoid activation
 nn = NeuralNetwork([DenseLayer(3, 2), Sigmoid()])
