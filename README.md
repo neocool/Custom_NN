@@ -14,8 +14,6 @@ To use the Custom Decimal Neural Network in your project, simply import the nece
 
 Here's a sample usage:
 
-python
-Copy code
 from decimal_nn import NeuralNetwork, DenseLayer, Sigmoid
 from decimal_loss import L1Loss
 from decimal_optimizer import Adam
