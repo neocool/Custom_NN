@@ -113,8 +113,16 @@ class Linear(Module):
         self.out_features = out_features
         self.weights = [[Decimal(random.uniform(-0.1, 0.1)) for _ in range(in_features)] for _ in range(out_features)]
         self.bias = [[Decimal(random.uniform(-0.1, 0.1))] for _ in range(out_features)]
+        self.grad_weights = [[Decimal(0) for _ in range(in_features)] for _ in range(out_features)]
+        self.grad_bias = [[Decimal(0)] for _ in range(out_features)]
+
+    def update_parameters(self, new_weights, new_biases):
+        self.weights = new_weights
+        self.biases = new_biases
 
     def forward(self, x):
+        # Update the weights and biases before the forward pass
+        self.update_parameters(self.parameters[0], self.parameters[1])
         # Store the input tensor for use in the backward pass
         self.input = x
         
@@ -130,12 +138,12 @@ class Linear(Module):
             linear_output.append(row_output)
         
         # Return the linear transformation output
+        self.linear_output = linear_output
         return linear_output
 
     def backward(self, grad_output):
         grad_input = [[sum([self.weights[j][i] * grad_output[b][j] for j in range(self.out_features)]) for i in range(self.in_features)] for b in range(len(grad_output))]       
         batch_size = len(self.input)
-
         grad_weights = []
         for j in range(self.out_features):
             temp_row = []
@@ -147,6 +155,8 @@ class Linear(Module):
             grad_weights.append(temp_row)
 
         grad_bias = [[Decimal(sum([grad_output[b][i] for b in range(len(grad_output))])) / batch_size] for i in range(self.out_features)]  # Divide by batch_size
+        self.grad_weights = grad_weights
+        self.grad_bias = grad_bias
         return grad_input, grad_weights, grad_bias
 
     @property
@@ -160,14 +170,32 @@ class Conv1D(Module):
         self.kernel_size = kernel_size
         self.padding = padding
         self.stride = stride
-        self.weights = [[[Decimal(random.uniform(-0.1, 0.1)) for _ in range(kernel_size)] for _ in range(in_channels)] for _ in range(out_channels)]
+        self.weights = [[[Decimal(random.uniform(-0.1, 0.1)) for _ in range(kernel_size)] for _ in range(in_channels)] for _ in range(out_channels)]        
         self.bias = [Decimal(random.uniform(-0.1, 0.1)) for _ in range(out_channels)]
+
+    def unflatten_weights(self):
+        weights = []
+        weight_start = 0
+        
+        for out_channel in range(self.out_channels):
+            weights_out = []
+            for in_channel in range(self.in_channels):
+                weights_in = self.weights[weight_start:weight_start + self.kernel_size]
+                weights_out.append(weights_in)
+                weight_start += self.kernel_size
+            
+            weights.append(weights_out)           
+
+        self.weights = weights
 
     @property
     def parameters(self):
-        return [self.weights, self.bias]
-    
-    def forward(self, x):
+        return [flatten_nested_structure(self.weights), flatten_nested_structure(self.bias)]
+
+    def forward(self, x):        
+        if not isinstance(self.weights[0],list):
+            self.unflatten_weights()
+        
         self.input = x
         batch_size = len(x)
         in_features = len(x[0][0])
@@ -197,7 +225,7 @@ class Conv1D(Module):
                 for feature in range(out_features):
                     # Take a slice of size kernel_size from the input features in each input channel
                     input_slice = [padded_input[example][channel][feature : feature + self.kernel_size] for channel in range(self.in_channels)]
-
+                    
                     # Multiply the corresponding values of the kernel and the input slice element-wise
                     multiplied_values = [[input_slice[channel][k] * Decimal(self.weights[out_channel][channel][k]) for k in range(self.kernel_size)] for channel in range(self.in_channels)]
                 
@@ -292,7 +320,10 @@ class Conv1D(Module):
 
             grad_bias.append([grad_bias_k / batch_size])  # Divide by batch_size
 
-        return grad_input, grad_weights, grad_bias
+        grad_conv_weights  = flatten_nested_structure(grad_weights)
+        grad_conv_biases  = flatten_nested_structure(grad_bias)
+
+        return grad_input, grad_conv_weights , grad_conv_biases
 
 class MultiHeadAttention(Module):
     def __init__(self, d_model, num_heads):
@@ -306,100 +337,314 @@ class MultiHeadAttention(Module):
         self.W_v = Linear(d_model, d_model)
         self.W_o = Linear(d_model, d_model)
 
-    def scaled_dot_product_attention(self, Q, K, V):
-        # Compute the dot product between Q and the transpose of K
-        K_T = list(map(list, zip(*K)))  # Transpose K
-        matmul_QK = decimal_matrix_multiply(Q, K_T)
-        dk = Decimal(self.head_dim)
-        scaled_attention_logits = [[qk / (dk.sqrt()) for qk in row] for row in matmul_QK]
-        attention_weights = [[elem.exp() for elem in row] for row in scaled_attention_logits]
-        sum_attention_weights = [sum(row) for row in attention_weights]
-        attention_weights = [[weight / total for weight in row] for row, total in zip(attention_weights, sum_attention_weights)]
-        return decimal_matrix_multiply(attention_weights, V)
+    def scaled_dot_product_attention(self, q, k, v):
+        q = [q]
+        k = [k]
+        v = [v]
+
+        dk = Decimal(len(q[0]))
+
+        QK = decimal_matrix_multiply(q, k)
+
+        # Scale the QK matrix
+        scaled_attention_logits = [[x / dk.sqrt() for x in row] for row in QK]
+
+        # Apply the softmax function to the scaled matrix
+        attention_weights = custom_softmax(scaled_attention_logits)
+
+        # Multiply the attention weights matrix by the value matrix
+
+        output = decimal_matrix_multiply(attention_weights, v)
+
+        self.attention_weights = attention_weights
+    
+        return output
 
     def split_heads(self, x):
         return [[x[b][head * self.head_dim : (head + 1) * self.head_dim] for head in range(self.num_heads)] for b in range(len(x))]
 
+    def split_grad_heads(self, x):
+        calculated_num_heads = list_shape(x)[1] // self.head_dim
+        
+        result = [
+            [
+                [x[b][head * self.head_dim : (head + 1) * self.head_dim]]
+                for head in range(calculated_num_heads)
+            ]
+            for b in range(len(x))
+        ]
+        return result
 
     def concat_heads(self, x):
-        return [[Decimal(elem) for head in range(self.num_heads) for elem in x[b][head]] for b in range(len(x))]
+        return [[head_elem for head in x[b] for head_elem in head] for b in range(len(x))]
+    
+    def unflatten(self, x, row_count, col_count):
+        return [[x[row * col_count + col] for col in range(col_count)] for row in range(row_count)]
 
-    def forward(self, Q, K, V):
-        Q = self.W_q.forward([[row[0] for row in example] for example in Q])
-        K = self.W_k.forward([[row[0] for row in example] for example in K])
-        V = self.W_v.forward([[row[0] for row in example] for example in V])
+    def forward(self, Q_input, K_input, V_input):        
+        self.W_q.parameters[0] = self.unflatten(self.allweights[0:self.d_model * self.d_model], self.d_model, self.d_model)
+        self.W_k.parameters[0] = self.unflatten(self.allweights[self.d_model * self.d_model:2 * self.d_model * self.d_model], self.d_model, self.d_model)
+        self.W_v.parameters[0] = self.unflatten(self.allweights[2 * self.d_model * self.d_model:3 * self.d_model * self.d_model], self.d_model, self.d_model)
+        self.W_o.parameters[0] = self.unflatten(self.allweights[3 * self.d_model * self.d_model:4 * self.d_model * self.d_model], self.d_model, self.d_model)
+        
+        self.W_q.parameters[1] = self.allbiases[0:self.d_model]
+        self.W_k.parameters[1] = self.allbiases[self.d_model :2 * self.d_model]
+        self.W_v.parameters[1] = self.allbiases[2 * self.d_model :3 * self.d_model]
+        self.W_o.parameters[1] = self.allbiases[3 * self.d_model :4 * self.d_model ]
+        
+        Q = self.W_q.forward([[row for row in example] for example in Q_input])
+        K = self.W_k.forward([[row for row in example] for example in K_input])
+        V = self.W_v.forward([[row for row in example] for example in V_input])
 
         Q = self.split_heads(Q)
         K = self.split_heads(K)
         V = self.split_heads(V)
 
-        attention = []
+        # Initialize empty attention list
+        attention = [[] for _ in range(len(Q))]
+        all_attention_weights = [[] for _ in range(len(Q))]
+
         for b in range(len(Q)):
-            batch_attention = self.scaled_dot_product_attention(Q[b], K[b], V[b])
-            attention.append(batch_attention)
+            batch_attention_heads = []
+            batch_attention_weights = []
+            for i in range(self.num_heads):
+                Q_head = Q[b][i]
+                K_head = K[b][i]
+                V_head = V[b][i]
 
-        attention = self.concat_heads(attention)
-        return self.W_o.forward(attention)
+                head_attention = self.scaled_dot_product_attention(Q_head, K_head, V_head)
+                batch_attention_heads.append(head_attention[0])
 
+                # Save attention_weights for each head
+                batch_attention_weights.append(self.attention_weights)
+
+            # Concatenate the attention heads
+            attention[b] = [token for head in batch_attention_heads for token in head]
+            all_attention_weights[b] = batch_attention_weights
+        
+        self.all_attention_weights = all_attention_weights
+        w_o_forward = self.W_o.forward(attention)
+
+        return w_o_forward
+
+    def backward(self, grad_output, attention_weights):
+        # Compute the gradients of the output of the linear layer with respect to the output of the attention layer.
+        grad_input, _, _ = self.W_o.backward(grad_output)
+        grad_attention = grad_input
+
+        # Unconcatenate the heads
+        grad_attention_heads = self.split_grad_heads(grad_attention)   
+      
+        # Initialize the gradients for Q, K, and V
+        grad_Q = [[[] for _ in range(self.num_heads)] for _ in range(len(grad_attention_heads))]
+        grad_K = [[[] for _ in range(self.num_heads)] for _ in range(len(grad_attention_heads))]
+        grad_V = [[[] for _ in range(self.num_heads)] for _ in range(len(grad_attention_heads))]
+
+        for b in range(len(grad_attention_heads)):
+            for i in range(self.num_heads):
+                Q_head_grad = decimal_matrix_multiply(decimal_matrix_transpose(grad_attention_heads[b][i]), attention_weights[b][i])
+                K_head_grad = decimal_matrix_multiply(decimal_matrix_transpose(attention_weights[b][i]), grad_attention_heads[b][i])
+                V_head_grad = decimal_matrix_multiply(attention_weights[b][i], grad_attention_heads[b][i])
+                grad_Q[b][i] = Q_head_grad
+                grad_K[b][i] = K_head_grad
+                grad_V[b][i] = V_head_grad
+
+        # Concatenate the heads back and compute the gradients for W_q, W_k, and W_v
+
+        grad_Q_concat = self.concat_heads(grad_Q)
+        grad_K_concat = self.concat_heads(grad_K)
+        grad_V_concat = self.concat_heads(grad_V)
+
+        
+        grad_Q_concat = [[sum(grad_Q_concat[b][i]) for i in range(len(grad_Q_concat[b]))] for b in range(len(grad_Q_concat))]
+        grad_K_concat = [[sum(grad_K_concat[b][i]) for i in range(len(grad_K_concat[b]))] for b in range(len(grad_K_concat))]
+        grad_V_concat = [[grad_V_concat[b][i][0] for i in range(len(grad_V_concat[b])) for _ in range(self.head_dim)] for b in range(len(grad_V_concat))]
+
+        W_q_grad_input, W_q_grad_weights, W_q_grad_bias = self.W_q.backward(grad_Q_concat)
+        W_k_grad_input, W_k_grad_weights, W_k_grad_bias = self.W_k.backward(grad_K_concat)
+        W_v_grad_input, W_v_grad_weights, W_v_grad_bias = self.W_v.backward(grad_V_concat)
+        grad_input = decimal_matrix_add(W_q_grad_input, W_k_grad_input)
+        grad_input = decimal_matrix_add(grad_input, W_v_grad_input)
+
+        return grad_input, [W_q_grad_weights, W_k_grad_weights, W_v_grad_weights, self.W_o.grad_weights], [W_q_grad_bias, W_k_grad_bias, W_v_grad_bias, self.W_o.grad_bias]
+ 
     @property
     def parameters(self):
-        return [self.W_q, self.W_k, self.W_v, self.W_o]
-
+        return [self.W_q.parameters, self.W_k.parameters, self.W_v.parameters, self.W_o.parameters]
+    
+    @property
+    def weights(self):
+        return [self.W_q.parameters[0], self.W_k.parameters[0], self.W_v.parameters[0], self.W_o.parameters[0]]
+    
+    @property
+    def biases(self):
+        return [self.W_q.parameters[1], self.W_k.parameters[1], self.W_v.parameters[1], self.W_o.parameters[1]]
+    
 class PositionwiseFeedForwardNetwork(Module):
     def __init__(self, d_model, d_ff):
         super().__init__()
+        self.d_model = d_model
+        self.d_ff = d_ff
         self.fc1 = Linear(d_model, d_ff)
         self.fc2 = Linear(d_ff, d_model)
+    
+    def unflatten(self, x, row_count, col_count):
+        return [[x[row * col_count + col] for col in range(col_count)] for row in range(row_count)]
 
     def forward(self, x):
+        self.fc1.parameters[0] = self.unflatten(self.allweights[0:self.d_model * self.d_ff], self.d_model, self.d_model)
+        self.fc2.parameters[0] = self.unflatten(self.allweights[self.d_model * self.d_ff:], self.d_model, self.d_model)
+        
+        self.fc1.parameters[1] = self.allbiases[0:self.d_ff]
+        self.fc2.parameters[1] = self.allbiases[self.d_ff :]
+        
+
         x = self.fc1.forward(x)
         x = [[max(Decimal(0), elem) for elem in row] for row in x]  # ReLU
         return self.fc2.forward(x)
 
+    def backward(self, grad_output):
+
+        grad_fc2 = self.fc2.backward(grad_output)
+        grad_relu = [[1 if elem > 0 else 0 for elem in row] for row in self.fc1.linear_output]
+
+        # Print the shapes of the matrices
+        
+        # Correct the matrix multiplication for grad_fc1
+        grad_fc1 = decimal_matrix_multiply(decimal_matrix_transpose(self.fc2.weights),grad_fc2[0])
+     
+
+        grad_fc1 = decimal_matrix_multiply( grad_relu,grad_fc1)
+
+        # Return the gradients for all layers
+        returnData = [grad_fc1,[self.fc1.grad_weights, self.fc2.grad_weights], [self.fc1.grad_bias, self.fc2.grad_bias], grad_fc2]
+
+        return returnData
+
+
     @property
-    def parameters(self):
-        return [self.fc1.parameters, self.fc2.parameters]
+    def biases(self):
+        return [self.fc1.parameters[1], self.fc2.parameters[1]]
+    @property
+    def weights(self):
+        return [self.fc1.parameters[0], self.fc2.parameters[0]]
 
 class TransformerLayer(Module):
     def __init__(self, d_model, num_heads, d_ff):
         super().__init__()
+        self.d_model = d_model
         self.mha = MultiHeadAttention(d_model, num_heads)
         self.ffn = PositionwiseFeedForwardNetwork(d_model, d_ff)
 
         self.norm1 = LayerNormalization(d_model)
         self.norm2 = LayerNormalization(d_model)
 
+    def update_params(self):
+        mha_weights_start = 0
+        mha_weights_end = 4*self.d_model*self.d_model
+        mha_bias_start = 0
+        mha_bias_end = 4*self.d_model
+        self.mha.allweights = self.parameters[0][mha_weights_start:mha_weights_end]
+        self.mha.allbiases = self.parameters[1][mha_bias_start:mha_bias_end]
+
+        ffn_weights_start = mha_weights_end
+        ffn_weights_end = ffn_weights_start + 2*self.d_model*self.d_model
+        ffn_bias_start = mha_bias_end
+        ffn_bias_end = ffn_bias_start + 2*self.d_model
+        self.ffn.allweights = self.parameters[0][ffn_weights_start:ffn_weights_end]
+        self.ffn.allbiases = self.parameters[1][ffn_bias_start:ffn_bias_end]
+
+        # Update normalization layer's parameters
+        norm1_gamma_start = ffn_weights_end
+        norm1_gamma_end = norm1_gamma_start + self.d_model
+        norm1_beta_start = ffn_bias_end
+        norm1_beta_end = norm1_beta_start + self.d_model
+        self.norm1.gamma = [self.parameters[0][norm1_gamma_start:norm1_gamma_end]]
+        self.norm1.beta = [self.parameters[1][norm1_beta_start:norm1_beta_end]]
+
+        norm2_gamma_start = norm1_gamma_end
+        norm2_gamma_end = norm2_gamma_start + self.d_model
+        norm2_beta_start = norm1_beta_end
+        norm2_beta_end = norm2_beta_start + self.d_model
+        self.norm2.gamma = [self.parameters[0][norm2_gamma_start:norm2_gamma_end]]
+        self.norm2.beta = [self.parameters[1][norm2_beta_start:norm2_beta_end]]
+
     def forward(self, x):
+        self.update_params()
+
+        self.x = x
         mha_output = self.mha.forward(x, x, x)
-        print("x shape:", len(x), len(x[0]))
-        print("mha_output shape:", len(mha_output), len(mha_output[0]))
-        print("x element type:", type(x[0][0]))
-        print("mha_output element type:", type(mha_output[0][0]))
 
         x_norm1 = self.norm1.forward(decimal_matrix_add(x, mha_output))
 
         ffn_output = self.ffn.forward(x_norm1)
         x_norm2 = self.norm2.forward(decimal_matrix_add(x_norm1, ffn_output))
-
+        self.all_attention_weights = self.mha.all_attention_weights        
+        
         return x_norm2
+    
+    def backward(self, grad_output):
+        # Calculate gradients of ffn_output with respect to loss
+        grad_x_norm2, grad_norm2_gamma, grad_norm2_beta = self.norm2.backward(grad_output)
+
+        grad_x_ffn, grad_ffn_weights, grad_ffn_biases, grad_fc2 = self.ffn.backward(grad_x_norm2)
+
+        # Calculate gradients of x_norm1 with respect to loss
+        grad_x_norm1, grad_norm1_gamma, grad_norm1_beta = self.norm1.backward(grad_x_ffn)
+
+        # Calculate gradients of x_norm1 with respect to loss              
+        grad_x, grad_mha_weights, grad_mha_bias = self.mha.backward(grad_x_norm1, self.all_attention_weights)
+
+        # Calculate gradients of x with respect to loss
+        grad_input = grad_x
+
+        grad_transformer_weights  = flatten_nested_structure([grad_mha_weights, grad_ffn_weights,grad_norm1_gamma,grad_norm2_gamma])
+        grad_transformer_biases  = flatten_nested_structure([grad_mha_bias, grad_ffn_biases,grad_norm1_beta,grad_norm2_beta])
+
+        return grad_input, grad_transformer_weights, grad_transformer_biases
 
     @property
     def parameters(self):
-        return [self.mha.parameters, self.ffn.parameters]
-  
+        return [flatten_nested_structure([self.mha.weights, self.ffn.weights,self.norm1.gamma,self.norm2.gamma]),
+                flatten_nested_structure([self.mha.biases, self.ffn.biases,self.norm1.beta,self.norm2.beta])]
+
 class LayerNormalization(Module):
     def __init__(self, d_model, epsilon=Decimal(1e-6)):
         super().__init__()
-        self.epsilon = epsilon
-        self.gamma = [[Decimal(1)] for _ in range(d_model)]
-        self.beta = [[Decimal(0)] for _ in range(d_model)]
+        self.d_model = d_model
+        self.epsilon = Decimal(epsilon)
+        self.gamma = [[Decimal(1) for _ in range(d_model)]]
+        self.beta = [[Decimal(0) for _ in range(d_model)]]
 
-    def forward(self, x):
-        mean = [Decimal(sum(row)) / Decimal(len(row)) for row in x]
-        var = [Decimal(sum([(elem - mean_i) ** 2 for elem in row])) / Decimal(len(row)) for row, mean_i in zip(x, mean)]
-        x_hat = [[(x[b][i] - mean[b]) / ((var[b] + self.epsilon).sqrt()) for i in range(len(x[0]))] for b in range(len(x))]
-        return [[self.gamma[i][0] * x_hat[b][i] + self.beta[i][0] for i in range(len(x[0]))] for b in range(len(x))]
+    def forward(self, x):       
+        self.x = x
+        self.mean = [Decimal(sum(row)) / Decimal(len(row)) for row in x]
+        self.var = [Decimal(sum([(elem - mean_i) ** 2 for elem in row])) / Decimal(len(row)) for row, mean_i in zip(x, self.mean)]
+        self.x_hat = [[(x[b][i] - self.mean[b]) / ((self.var[b] + self.epsilon).sqrt()) for i in range(len(x[0]))] for b in range(len(x))]
 
+        return [[self.gamma[0][i] * self.x_hat[b][i] + self.beta[0][i] for i in range(len(x[0]))] for b in range(len(x))]
+
+    def backward(self, grad_output):
+        d_gamma = [[sum([grad_output[b][i] * self.x_hat[b][i] for b in range(len(grad_output))]) for i in range(len(grad_output[0]))]]
+        d_beta = [[sum([grad_output[b][i] for b in range(len(grad_output))]) for i in range(len(grad_output[0]))]]
+
+        # Compute the gradients for the input
+        d_xhat = [[grad_output[b][i] * self.gamma[0][i] for i in range(len(grad_output[0]))] for b in range(len(grad_output))]
+        d_var = [sum([d_xhat[b][i] * (self.mean[b] - elem) * Decimal(-0.5) * ((self.var[b] + self.epsilon) ** Decimal(-1.5)) for i, elem in enumerate(row)]) for b, row in enumerate(grad_output)]
+        d_mean = [sum([-d_xhat[b][i] / ((self.var[b] + self.epsilon) ** Decimal(0.5)) for i in range(len(d_xhat[0]))]) + \
+                d_var[b] * (-2) * Decimal(len(grad_output[0])) * sum([(elem - self.mean[b]) for elem in row]) / Decimal(len(grad_output[0])) for b, row in enumerate(grad_output)]
+        d_x = [[d_xhat[b][i] / ((self.var[b] + self.epsilon) ** Decimal(0.5)) + \
+                d_var[b] * (2) * (self.x[b][i] - self
+                                  .mean[b]) / Decimal(len(grad_output[0])) + \
+                d_mean[b] / Decimal(len(grad_output[0])) for i, elem in enumerate(row)] for b, row in enumerate(grad_output)]
+
+        return d_x, d_gamma, d_beta
+
+
+
+    @property
+    def parameters(self):
+        return [self.gamma, self.beta]
 
 class Loss:
     def __init__(self):
@@ -447,7 +692,7 @@ class Adam(Optimizer):
         self.beta2 = Decimal(str(beta2))
         self.epsilon = Decimal(str(epsilon))
         self.lr = Decimal(lr)
-        self.m = create_zeros_structure(self.params)
+        self.m = create_zeros_structure(self.params)        
         self.v = create_zeros_structure(self.params)
 
         self.t = 0
@@ -456,8 +701,10 @@ class Adam(Optimizer):
         self.t += 1
         for i in range(len(self.parameters)):
             grad_layer_weights = gradients[i][0]
+            #print("list_shape(grad_layer_weights):",list_shape(grad_layer_weights)) 
             param_layer_weights = self.parameters[i][0]            
-            m_layer_weights = self.m[i][0]            
+            m_layer_weights = self.m[i][0]
+            #print("list_shape(m_layer_weights):",list_shape(m_layer_weights))            
             v_layer_weights = self.v[i][0]
 
             # For biases
@@ -467,58 +714,90 @@ class Adam(Optimizer):
             v_layer_biases = self.v[i][1]
 
             #items = count_elements(grad_layer_weights)
-            for k in range(len(grad_layer_weights)):                
-                grad_weights = grad_layer_weights[k][0]
-                grad_biases = grad_layer_biases[k][0]
+            if isinstance(grad_layer_weights[0],Decimal):
+                for k in range(len(grad_layer_weights)):             
+                    grad_weights = grad_layer_weights[k]
+                    
+                    #print("grad_weights shape:", list_shape(grad_weights))
+                    #print("m_layer_weights[k]:", m_layer_weights[k])
+                    #print("m_layer_weights[k] shape:", list_shape(m_layer_weights[k]))
+                    # Update first and second moment estimates for weights
+                    m_layer_weights[k] = self.beta1 * m_layer_weights[k] + (1 - self.beta1) * grad_weights
+                    v_layer_weights[k] = self.beta2 * v_layer_weights[k] + (1 - self.beta2) * (grad_weights ** 2)
 
-                if isinstance(grad_weights,list):
-                    for z in range(len(grad_weights)):
-                        # Update first and second moment estimates for weights
-                        m_layer_weights[k][0][z] = self.beta1 * m_layer_weights[k][0][z] + (1 - self.beta1) * grad_weights[z]
-                        v_layer_weights[k][0][z] = self.beta2 * v_layer_weights[k][0][z] + (1 - self.beta2) * (grad_weights[z] ** 2)
+                    # Compute bias-corrected first and second moment estimates for weights
+                    m_hat_weights = m_layer_weights[k] / (1 - self.beta1 ** self.t)
+                    v_hat_weights = v_layer_weights[k] / (1 - self.beta2 ** self.t)
 
-                        # Compute bias-corrected first and second moment estimates for weights
-                        m_hat_weights = m_layer_weights[k][0][z] / (1 - self.beta1 ** self.t)
-                        v_hat_weights = v_layer_weights[k][0][z] / (1 - self.beta2 ** self.t)
+                    # Update weights
+                    param_layer_weights[k] -= self.lr * m_hat_weights / ((v_hat_weights).sqrt() + self.epsilon)
 
-                        # Update weights
-                        param_layer_weights[k][0][z] -= self.lr * m_hat_weights / ((v_hat_weights).sqrt() + self.epsilon)
-
+                for k in range(len(grad_layer_biases)):
+                    grad_biases = grad_layer_biases[k]
                     # Update first and second moment estimates for biases
                     m_layer_biases[k] = self.beta1 * m_layer_biases[k] + (1 - self.beta1) * grad_biases
                     v_layer_biases[k] = self.beta2 * v_layer_biases[k] + (1 - self.beta2) * (grad_biases ** 2)
 
                     # Compute bias-corrected first and second moment estimates for biases
-                    m_hat_biases = m_layer_biases[k]/ (1 - self.beta1 ** self.t)
+                    m_hat_biases = m_layer_biases[k] / (1 - self.beta1 ** self.t)
                     v_hat_biases = v_layer_biases[k] / (1 - self.beta2 ** self.t)
 
                     # Update biases
-                    param_layer_biases[k] -= self.lr * m_hat_biases / ((v_hat_biases).sqrt() + self.epsilon)
-                
-                else:
-                    # Update first and second moment estimates for weights
-                    m_layer_weights[k][0] = self.beta1 * m_layer_weights[k][0] + (1 - self.beta1) * grad_weights
-                    v_layer_weights[k][0] = self.beta2 * v_layer_weights[k][0] + (1 - self.beta2) * (grad_weights ** 2)
+                    param_layer_biases[k] -= self.lr * m_hat_biases / ((v_hat_biases).sqrt() + self.epsilon)     
+            else:
+                for k in range(len(grad_layer_weights)):
+                    grad_weights = grad_layer_weights[k][0]
+                    grad_biases = grad_layer_biases[k][0]
+                    if isinstance(grad_weights,list):                                     
+                        for z in range(len(grad_weights)):                            
+                            # Update first and second moment estimates for weights
+                            m_layer_weights[k][0][z] = self.beta1 * m_layer_weights[k][0][z] + (1 - self.beta1) * grad_weights[z]
+                            v_layer_weights[k][0][z] = self.beta2 * v_layer_weights[k][0][z] + (1 - self.beta2) * (grad_weights[z] ** 2)
 
-                    # Compute bias-corrected first and second moment estimates for weights
-                    m_hat_weights = m_layer_weights[k][0] / (1 - self.beta1 ** self.t)
-                    v_hat_weights = v_layer_weights[k][0] / (1 - self.beta2 ** self.t)
+                            # Compute bias-corrected first and second moment estimates for weights
+                            m_hat_weights = m_layer_weights[k][0][z] / (1 - self.beta1 ** self.t)
+                            v_hat_weights = v_layer_weights[k][0][z] / (1 - self.beta2 ** self.t)
 
-                    # Update weights
-                    param_layer_weights[k][0] -= self.lr * m_hat_weights / ((v_hat_weights).sqrt() + self.epsilon)
+                            # Update weights
+                            param_layer_weights[k][0][z] -= self.lr * m_hat_weights / ((v_hat_weights).sqrt() + self.epsilon)
 
-                    # Update first and second moment estimates for biases
-                    m_layer_biases[k][0] = self.beta1 * m_layer_biases[k][0] + (1 - self.beta1) * grad_biases
-                    v_layer_biases[k][0] = self.beta2 * v_layer_biases[k][0] + (1 - self.beta2) * (grad_biases ** 2)
+                        # Update first and second moment estimates for biases
+                        m_layer_biases[k] = self.beta1 * m_layer_biases[k] + (1 - self.beta1) * grad_biases
+                        v_layer_biases[k] = self.beta2 * v_layer_biases[k] + (1 - self.beta2) * (grad_biases ** 2)
 
-                    # Compute bias-corrected first and second moment estimates for biases
-                    m_hat_biases = m_layer_biases[k][0] / (1 - self.beta1 ** self.t)
-                    v_hat_biases = v_layer_biases[k][0] / (1 - self.beta2 ** self.t)
+                        # Compute bias-corrected first and second moment estimates for biases
+                        m_hat_biases = m_layer_biases[k]/ (1 - self.beta1 ** self.t)
+                        v_hat_biases = v_layer_biases[k] / (1 - self.beta2 ** self.t)
 
-                    # Update biases
-                    param_layer_biases[k][0] -= self.lr * m_hat_biases / ((v_hat_biases).sqrt() + self.epsilon)
- 
+                        # Update biases
+                        param_layer_biases[k] -= self.lr * m_hat_biases / ((v_hat_biases).sqrt() + self.epsilon)
+                    
+                    else:
+                        # Update first and second moment estimates for weights
+                        m_layer_weights[k][0] = self.beta1 * m_layer_weights[k][0] + (1 - self.beta1) * grad_weights
+                        v_layer_weights[k][0] = self.beta2 * v_layer_weights[k][0] + (1 - self.beta2) * (grad_weights ** 2)
 
+                        # Compute bias-corrected first and second moment estimates for weights
+                        m_hat_weights = m_layer_weights[k][0] / (1 - self.beta1 ** self.t)
+                        v_hat_weights = v_layer_weights[k][0] / (1 - self.beta2 ** self.t)
+
+                        # Update weights
+                        param_layer_weights[k][0] -= self.lr * m_hat_weights / ((v_hat_weights).sqrt() + self.epsilon)
+
+                        # Update first and second moment estimates for biases
+                        m_layer_biases[k][0] = self.beta1 * m_layer_biases[k][0] + (1 - self.beta1) * grad_biases
+                        v_layer_biases[k][0] = self.beta2 * v_layer_biases[k][0] + (1 - self.beta2) * (grad_biases ** 2)
+
+                        # Compute bias-corrected first and second moment estimates for biases
+                        m_hat_biases = m_layer_biases[k][0] / (1 - self.beta1 ** self.t)
+                        v_hat_biases = v_layer_biases[k][0] / (1 - self.beta2 ** self.t)
+
+                        # Update biases
+                        param_layer_biases[k][0] -= self.lr * m_hat_biases / ((v_hat_biases).sqrt() + self.epsilon)
+            
+            self.parameters[i][0] = param_layer_weights
+            self.parameters[i][1] = param_layer_biases
+    
 def decimal_multiply_list(decimal_value, decimal_list):
     return [decimal_value * item for item in decimal_list]
 
@@ -585,14 +864,24 @@ class mixedNetwork2(NeuralNetwork):
         super().__init__()
         self.inputLayer1 = Linear(insize, hiddennodes*3)
         self.layers.append(self.inputLayer1)
-        self.convlayersNum = 20
+        self.convlayersNum = 5
         self.convlayers = []
         for i in range(self.convlayersNum):
             self.convlayers.append(Conv1D(3,3,3,1,1))
             self.layers.append(self.convlayers[i])
 
-        self.transformer1 = TransformerLayer(32,8,64)
+       
+        self.transformer1 = TransformerLayer(hiddennodes*3,10,hiddennodes*3)
         self.layers.append(self.transformer1)
+
+        self.transformer2 = TransformerLayer(hiddennodes*3,10,hiddennodes*3)
+        self.layers.append(self.transformer2)
+
+        self.transformer3 = TransformerLayer(hiddennodes*3,10,hiddennodes*3)
+        self.layers.append(self.transformer3)
+
+        self.transformer4 = TransformerLayer(hiddennodes*3,10,hiddennodes*3)
+        self.layers.append(self.transformer4)
 
         self.outLayer1 = Linear(hiddennodes*3, hiddennodes)
         self.layers.append(self.outLayer1)
@@ -633,36 +922,74 @@ class mixedNetwork2(NeuralNetwork):
         # Convert the shape to (1, 300, 1)
         #convOut = [[[x] for x in inner_list] for inner_list in convOut]
 
-        print(list_shape(convOut))
-        input()
-        nn_transfrom = self.transformer1.forward(nn_conv)
-        
-        outLayer1 = self.outLayer1.forward(convOut)
+        nn_transfrom = self.transformer1.forward(convOut)
+        nn_transfrom = self.transformer2.forward(nn_transfrom)
+        nn_transfrom = self.transformer3.forward(nn_transfrom)
+        nn_transfrom = self.transformer4.forward(nn_transfrom)
+
+        outLayer1 = self.outLayer1.forward(nn_transfrom)
         outLayer2 = self.outLayer2.forward(outLayer1)  
         return outLayer2
 
-
 def decimal_matrix_multiply(matrix1, matrix2):
-    rows1 = len(matrix1)
-    cols1 = len(matrix1[0])
-    rows2 = len(matrix2)
-    cols2 = len(matrix2[0])
+    if len(matrix1) == 0 or len(matrix2) == 0:
+        return []
 
-    result = [[Decimal(0) for _ in range(len(matrix2[0]))] for _ in range(len(matrix1))]
-    for i in range(len(matrix1)):
-        for j in range(len(matrix2[0])):
-            for k in range(len(matrix2)):
-                result[i][j] += matrix1[i][k] * matrix2[k][j]
+    if isinstance(matrix1[0][0], list):  # Check if matrix1 is a 3D tensor
+        result = [
+            [
+                [
+                    sum(matrix1[b][i][k] * matrix2[b][k][j] for k in range(len(matrix2[b])))
+                    for j in range(len(matrix2[b][0]))
+                ]
+                for i in range(len(matrix1[b]))
+            ]
+            for b in range(len(matrix1))
+        ]
+    else:
+        result = [
+            [
+                sum(matrix1[i][k] * matrix2[k][j] for k in range(len(matrix2)))
+                for j in range(len(matrix2[0]))
+            ]
+            for i in range(len(matrix1))
+        ]
     return result
 
-
 def decimal_matrix_add(matrix1, matrix2):
-    print(f"Matrix1 shape: {len(matrix1)} {len(matrix1[0])}")
-    print(f"Matrix2 shape: {len(matrix2)} {len(matrix2[0])}")
-    print(f"Expected result shape: {len(matrix1)} {len(matrix1[0])}")
     result = [[0 for j in range(len(matrix1[0]))] for i in range(len(matrix1))]
     for i in range(len(matrix1)):
         for j in range(len(matrix1[0])):
-            print(f"Adding {matrix1[i][j]} and {matrix2[i][j]}")
             result[i][j] = matrix1[i][j] + matrix2[i][j]
     return result
+
+def decimal_matrix_transpose(matrix):
+    return [[matrix[j][i] for j in range(len(matrix))] for i in range(len(matrix[0]))]
+
+def transpose(matrix):
+    if isinstance(matrix, list) and isinstance(matrix[0], Decimal):  # Handle the case when the input is a single list of decimals
+        return [[matrix[i]] for i in range(len(matrix))]
+    return [[matrix[j][i] for j in range(len(matrix))] for i in range(len(matrix[0]))]
+
+def custom_softmax(matrix):
+    softmax_matrix = []
+    for x in matrix:
+        e_x = [Decimal(math.exp(xi)) for xi in x]
+        sum_e_x = sum(e_x)
+        softmax_row = [num / sum_e_x for num in e_x]
+        softmax_matrix.append(softmax_row)
+    return softmax_matrix
+
+def flatten_nested_structure(structure):
+    result = []
+
+    def _flatten(struct):
+        for item in struct:
+            if isinstance(item, list):
+                _flatten(item)
+            else:
+                result.append(item)
+
+    _flatten(structure)
+    return result
+
