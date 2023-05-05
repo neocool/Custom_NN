@@ -24,9 +24,6 @@ Here's a sample usage:
 ```python
 import NN_Module
 
-# Create a neural network with a Dense layer and Sigmoid activation
-nn = NeuralNetwork([DenseLayer(3, 2), Sigmoid()])
-
 # Create input tensor
 input_data = [
     [1.0, 2.0, 3.0],
@@ -40,7 +37,7 @@ y_true = [
     [0.5, 0.5]
 ]
 
-model = mixedNetwork(1,1,10)
+model = mixedNetwork(3,2,10)
 optimizer = nn.Adam([[layer.parameters for layer in network] for network in model.networks], lr=Decimal(0.0005))
 criterion = nn.L1Loss()
 
