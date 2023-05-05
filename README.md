@@ -33,27 +33,36 @@ input_data = [
     [4.0, 5.0, 6.0],
     [7.0, 8.0, 9.0]
 ]
-input_tensor = nntensor(input_data)
 
-# Forward pass
-output = nn.forward(input_tensor)
-
-# Calculate loss
 y_true = [
     [0.5, 0.5],
     [0.5, 0.5],
     [0.5, 0.5]
 ]
-loss_function = L1Loss()
-loss = loss_function.forward(output, y_true)
 
-# Backward pass
-gradients = loss_function.backward(output, y_true)
-nn.backward(gradients)
+model = mixedNetwork(1,1,10)
+optimizer = nn.Adam([[layer.parameters for layer in network] for network in model.networks], lr=Decimal(0.0005))
+criterion = nn.L1Loss()
 
-# Update parameters with Adam optimizer
-optimizer = Adam(nn.parameters, lr=0.001)
-optimizer.step(gradients)
+# Forward pass
+while loss >= 0.00001:
+     y_pred = model.forward(input_data) 
+
+    # Calculate loss
+    loss = criterion.forward(y_pred,batch_labels)
+    
+    print('Loss: ' + str(loss) )
+    loss_grads = criterion.backward(y_pred,y_true)                
+    gradients = model.backward(loss_grads)
+
+    # Update parameters with Adam optimizer
+    optimizer.step(gradients)
+    model.update_parameters(optimizer.parameters)
+    
+    with open('Models/customNetModel.pkl', 'wb') as f:
+        pickle.dump(model, f)
+    with open('Models/optimizer_state.pkl', 'wb') as f:
+        pickle.dump(optimizer, f)
 
 ```
 
