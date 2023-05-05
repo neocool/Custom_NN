@@ -149,6 +149,7 @@ class Linear(Module):
     def parameters(self):
         return [flatten_nested_structure(self.weights),flatten_nested_structure(self.biases)]
 
+
 class Conv1D(Module):
     def __init__(self, in_channels, out_channels, kernel_size, padding,stride):
         self.in_channels = in_channels
@@ -868,76 +869,6 @@ def create_zeros_structure(params):
         return [create_zeros_structure(sublist) for sublist in params]
     else:
         return Decimal(0)
-
-class mixedNetwork3(NeuralNetwork):
-    def __init__(self,insize,outsize,hiddennodes,linear=3):
-        super().__init__()   
-
-        #Network 1
-        self.inputLayer = Linear(insize, hiddennodes)
-        self.layers.append(self.inputLayer)
-
-        self.hidden1 = Linear(hiddennodes, hiddennodes)
-        self.layers.append(self.hidden1)
-        self.hidden2 = Linear(hiddennodes, hiddennodes)
-        self.layers.append(self.hidden2)
-        self.hidden3 = Linear(hiddennodes, 2)
-        self.layers.append(self.hidden3)
-
-
-        self.hidden4 = Linear(2, 2)
-        self.layers.append(self.hidden4)
-        self.hidden5 = Linear(2, 2)
-        self.layers.append(self.hidden5)
-        self.hidden6 = Linear(2, hiddennodes)
-        self.layers.append(self.hidden6)
-
-        
-        self.out = Linear(hiddennodes, 10)
-        self.layers.append(self.out)
-        
-        self.networks.append(self.layers)
-
-    def forward(self,x):
-        nn_input = self.inputLayer.forward(x)    
-        
-        nn_hidden = self.hidden1.forward(nn_input)  
-        nn_hidden = self.hidden2.forward(nn_hidden) 
-        nn_hidden = self.hidden3.forward(nn_hidden)
-
-        nn_hidden = self.hidden4.forward(nn_hidden)
-        nn_hidden = self.hidden5.forward(nn_hidden)
-        nn_hidden = self.hidden6.forward(nn_hidden)
-     
-        nn_out = self.out.forward(nn_hidden) 
-        out = []
-        for row in  nn_out:
-            out.append([sum(row)])
-        return out
-
-    def backward(self, grad_output):      
-        network_gradients = []
-        for i in range(len(self.networks)):
-            network_grad_output = []
-            gradients = []
-            for z in range(len(self.networks[i][-1].input)):
-                temp = []
-                for g in range(len(self.networks[i][-1].weights)):
-                    temp.append(grad_output[z][0])
-                network_grad_output.append(temp)
-            grad_input, grad_weights, grad_bias = self.networks[i][-1].backward(network_grad_output)
-            gradients.append([flatten_nested_structure(grad_weights), flatten_nested_structure(grad_bias)])
-
-            for layer_idx in reversed(range(len(self.networks[i]) - 1)):
-                layer = self.networks[i][layer_idx]
-    
-                grad_input, grad_weights, grad_bias = layer.backward(grad_input)
-                gradients.append([flatten_nested_structure(grad_weights), flatten_nested_structure(grad_bias)])
-
-            network_gradients.append(gradients[::-1] )
-
-        return network_gradients 
-
 
 def decimal_matrix_multiply(matrix1, matrix2):
     if len(matrix1) == 0 or len(matrix2) == 0:
