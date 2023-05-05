@@ -2,103 +2,45 @@ from copy import deepcopy
 import math
 import random
 from decimal import Decimal, getcontext
+import statistics
 getcontext().prec = 150
 
 class NeuralNetwork:
     def __init__(self):
         self.layers = []
+        self.networks = []
+
     def add_layer(self, layer):
         self.layers.append(layer)
 
     def forward(self, x):
         for layer in self.layers:
             x = layer.forward(x)
-            #print("Layer:", layer.__class__.__name__)
-            #print("Output shape:", len(x), len(x[0]))
         return x
     
-    def update_parameters(self, optimizer_parameters):
-        for i, layer in enumerate(self.layers):
-            layer.weights = optimizer_parameters[i][0]
-            layer.bias = optimizer_parameters[i][1]
+    def update_parameters(self, optimizer_parameters):        
+        for b in range(len(self.networks)):
+            for i, layer in enumerate(self.networks[b]):
+                layer.update_parameters(optimizer_parameters[b][i][0],optimizer_parameters[b][i][1])
 
     def backward(self, grad_output):        
-        gradients = []
-        grad_input, grad_weights, grad_bias = self.layers[-1].backward(grad_output)
-        gradients.append((grad_weights, grad_bias))
+        network_gradients = []
+        for i in range(len(self.networks)):
+            network_grad_output = grad_output
+            gradients = []
+            grad_input, grad_weights, grad_bias = self.networks[i][-1].backward(network_grad_output)
+            gradients.append([flatten_nested_structure(grad_weights), flatten_nested_structure(grad_bias)])
 
-        for layer_idx in reversed(range(len(self.layers) - 1)):
-            layer = self.layers[layer_idx]
-  
-            grad_input, grad_weights, grad_bias = layer.backward(grad_input)
-            gradients.append((grad_weights, grad_bias))
-
-            # Update grad_output for the next iteration
-            grad_output = grad_input
-
-        return gradients[::-1]  # Reverse the list to match the order of layers
+            for layer_idx in reversed(range(len(self.networks[i]) - 1)):
+                layer = self.networks[i][layer_idx]
     
-class mixedNetwork(NeuralNetwork):
-    def __init__(self,insize,outsize,hiddennodes):
-        super().__init__()
-        self.inputLayer1 = Linear(insize, hiddennodes*3)
-        self.layers.append(self.inputLayer1)
-        
-        self.conv1 = Conv1D(3,3,3,1,1)
-        self.layers.append(self.conv1)
+                grad_input, grad_weights, grad_bias = layer.backward(grad_input)
+                gradients.append([flatten_nested_structure(grad_weights), flatten_nested_structure(grad_bias)])
 
-        self.conv2 = Conv1D(3,3,3,1,1)
-        self.layers.append(self.conv2)
+            network_gradients.append(gradients[::-1] )
 
-        self.conv3 = Conv1D(3,3,3,1,1)
-        self.layers.append(self.conv3)
-
-        self.conv4 = Conv1D(3,3,3,1,1)
-        self.layers.append(self.conv4)
-
-        self.conv5 = Conv1D(3,3,3,1,1)
-        self.layers.append(self.conv5)
-
-        self.outLayer1 = Linear(hiddennodes*3, hiddennodes)
-        self.layers.append(self.outLayer1)
-
-        self.outLayer2 = Linear(hiddennodes, outsize)
-        self.layers.append(self.outLayer2)
-
-    def forward(self,x):
-        nn_input1 = self.inputLayer1.forward(x)
-        nn_input1 = pow(nn_input1,3)
-
-        nn_input = []
-        for example in nn_input1:
-            featureList = []
-            featuresNum = int(len(example)/ 3)
-            featuresStart = 0
-            featuresEnd = featuresStart +  featuresNum
-            for i in range(3):                                
-                featureList.append(example[featuresStart:featuresEnd])
-                featuresStart = featuresStart +  featuresNum
-                featuresEnd = featuresStart +  featuresNum
-            nn_input.append(featureList)
-               
-        nn_conv1 = leaky_relu(self.conv1.forward(nn_input))
-        nn_conv2 = leaky_relu(self.conv2.forward(nn_conv1))
-        nn_conv3 = leaky_relu(self.conv3.forward(nn_conv2))
-        nn_conv4 = self.conv4.forward(nn_conv3)
-        nn_conv5 = leaky_relu(self.conv5.forward(nn_conv4))
-        
-        convOut = []
-        for i in range(len(nn_conv5)):
-            features = []
-            for m in range(len(nn_conv5[0])):
-                for item in nn_conv5[i][m]:
-                    features.append(item)
-            convOut.append(features)  
-        
-        outLayer1 = self.outLayer1.forward(convOut)
-        outLayer2 = self.outLayer2.forward(outLayer1)  
-        return outLayer2
-
+        return network_gradients 
+    
 class Module:
     def __init__(self):
         pass
@@ -112,29 +54,50 @@ class Linear(Module):
         self.in_features = in_features
         self.out_features = out_features
         self.weights = [[Decimal(random.uniform(-0.1, 0.1)) for _ in range(in_features)] for _ in range(out_features)]
-        self.bias = [[Decimal(random.uniform(-0.1, 0.1))] for _ in range(out_features)]
+        self.biases = [[Decimal(random.uniform(-0.1, 0.1))] for _ in range(out_features)]
         self.grad_weights = [[Decimal(0) for _ in range(in_features)] for _ in range(out_features)]
         self.grad_bias = [[Decimal(0)] for _ in range(out_features)]
 
     def update_parameters(self, new_weights, new_biases):
-        self.weights = new_weights
-        self.biases = new_biases
+        updated_weights = []
+        counter = 0
+        for i in range(list_shape(self.weights)[0]):
+            row = []
+            for z in range(list_shape(self.weights)[1]):
+                row.append(new_weights[counter])
+                counter += 1
+            updated_weights.append(row)
+
+        self.weights = updated_weights
+        
+
+        updated_biases = []
+        counter = 0
+        for i in range(list_shape(self.biases)[0]):
+            row = []
+            for z in range(list_shape(self.biases)[1]):
+                row.append(new_biases[counter])
+                counter += 1
+            updated_biases.append(row)
+
+        self.biases = updated_biases
 
     def forward(self, x):
-        # Update the weights and biases before the forward pass
-        self.update_parameters(self.parameters[0], self.parameters[1])
         # Store the input tensor for use in the backward pass
         self.input = x
         
         # Compute the linear transformation of the input tensor
         linear_output = []
-        for b in range(len(x)):
-            row_output = []
+        batchsize = len(x)
+        
+        for b in range(batchsize):
+            row_output = []            
             for i in range(len(self.weights)):
-                weighted_sum = 0
-                for j in range(len(x[b])):                    
-                    weighted_sum += x[b][j] * self.weights[i][j]
-                row_output.append(weighted_sum + self.bias[i][0])
+                weighted_sum = 0                
+                for j in range(len(x[b])):                  
+                    weighted_sum += x[b][j] * self.weights[i][j]    
+   
+                row_output.append(weighted_sum + self.biases[i][0])
             linear_output.append(row_output)
         
         # Return the linear transformation output
@@ -142,26 +105,49 @@ class Linear(Module):
         return linear_output
 
     def backward(self, grad_output):
-        grad_input = [[sum([self.weights[j][i] * grad_output[b][j] for j in range(self.out_features)]) for i in range(self.in_features)] for b in range(len(grad_output))]       
+        grad_input = []
+        
+        weights_transposed = decimal_matrix_transpose(self.weights)
+        for b in range(len(grad_output)):
+            batch_grad_input = []            
+            for i in range(self.in_features):
+                sum_weighted_sums = 0                
+                for j in range(self.out_features):
+                    sum_weighted_sums += weights_transposed[i][j] * grad_output[b][j]                   
+                batch_grad_input.append(sum_weighted_sums)                
+            grad_input.append(batch_grad_input)
+
+        
         batch_size = len(self.input)
         grad_weights = []
+        input_transposed = decimal_matrix_transpose(self.input)
         for j in range(self.out_features):
             temp_row = []
             for i in range(self.in_features):
-                temp_sum = 0
-                for b in range(batch_size):              
-                    temp_sum += grad_output[b][j] * Decimal(str(self.input[b][i]))
-                temp_row.append(temp_sum / batch_size)  # Divide by batch_size
+                temp_sum = []
+                for b in range(batch_size): 
+                    temp_sum.append( input_transposed[i][b] * grad_output[b][j])
+                temp_row.append(statistics.median(temp_sum))  # Divide by batch_size
             grad_weights.append(temp_row)
 
-        grad_bias = [[Decimal(sum([grad_output[b][i] for b in range(len(grad_output))])) / batch_size] for i in range(self.out_features)]  # Divide by batch_size
+        grad_bias = []
+        for i in range(self.out_features):
+            bias_sum = []
+            for b in range(len(grad_output)):
+                bias_sum.append(grad_output[b][i])
+            bias_median = statistics.median(bias_sum)
+            grad_bias.append([bias_median])
+
+        #input()
         self.grad_weights = grad_weights
         self.grad_bias = grad_bias
-        return grad_input, grad_weights, grad_bias
+        returndata =   [grad_input, grad_weights, grad_bias]
+
+        return returndata
 
     @property
     def parameters(self):
-        return [self.weights, self.bias]
+        return [flatten_nested_structure(self.weights),flatten_nested_structure(self.biases)]
 
 class Conv1D(Module):
     def __init__(self, in_channels, out_channels, kernel_size, padding,stride):
@@ -539,7 +525,9 @@ class TransformerLayer(Module):
         self.norm1 = LayerNormalization(d_model)
         self.norm2 = LayerNormalization(d_model)
 
-    def update_params(self):
+    def update_parameters(self,weights,biases):
+        self.parameters[0] = weights
+        self.parameters[1] = biases
         mha_weights_start = 0
         mha_weights_end = 4*self.d_model*self.d_model
         mha_bias_start = 0
@@ -570,8 +558,7 @@ class TransformerLayer(Module):
         self.norm2.beta = [self.parameters[1][norm2_beta_start:norm2_beta_end]]
 
     def forward(self, x):
-        self.update_params()
-
+        self.update_parameters(self.parameters[0],self.parameters[1])
         self.x = x
         mha_output = self.mha.forward(x, x, x)
 
@@ -660,20 +647,68 @@ class L1Loss(Loss):
     def forward(self, y_pred, y_true):
         batch_size = len(y_pred)
         total_loss = Decimal(0)
+
         for i in range(batch_size):
-            total_loss += sum([abs(y_pred[i][j] - y_true[i][j]) for j in range(len(y_pred[i]))])
+            for j in range(len(y_pred[i])):
+                diff = y_pred[i][j] - y_true[i][j]
+                abs_diff = abs(diff)
+                total_loss += abs_diff
+
+        return total_loss / batch_size
+
+    def backward(self, y_pred, y_true):
+        gradients = []
+        #loop over examples in batch
+        for i in range(len(y_pred)):
+            row_gradients = []
+            # loop over labels in example           
+            for j in range(len(y_pred[i])):
+                if y_pred[i][j] > y_true[i][j]:
+                    grad = Decimal('1')
+                elif y_pred[i][j] == y_true[i][j]:
+                    grad = Decimal('0')
+                else:
+                    grad = Decimal('-1')
+                row_gradients.append(grad)
+            gradients.append(row_gradients)
+        return gradients
+    
+class BinaryCrossEntropyLoss(Loss):
+    def forward(self, y_pred, y_true):
+        batch_size = len(y_pred)
+        total_loss = Decimal(0)
+
+        for i in range(batch_size):
+            for j in range(len(y_pred[i])):
+                total_loss -= y_true[i][j] * Decimal(math.log(y_pred[i][j])) + (1 - y_true[i][j]) * Decimal(math.log(1 - y_pred[i][j]))
+
+        return total_loss / batch_size
+    
+    def backward(self, y_pred, y_true):
+        batch_size = len(y_pred)
+        gradients = []
+
+        for i in range(batch_size):
+            row_gradients = []
+            for j in range(len(y_pred[i])):
+                grad = (y_pred[i][j] - y_true[i][j]) / (y_pred[i][j] * (1 - y_pred[i][j]))
+                row_gradients.append(grad)
+            gradients.append(row_gradients)
+        return gradients
+
+class MSELoss(Loss):
+    def forward(self, y_pred, y_true):
+        batch_size = len(y_pred)
+        total_loss = Decimal(0)
+        for i in range(batch_size):
+            total_loss += sum([(y_pred[i][j] - y_true[i][j])**2 for j in range(len(y_pred[i]))])
         
         return total_loss / batch_size
 
     def backward(self, y_pred, y_true):
-        #print(f"y_pred: {y_pred}")
-        #print(f"y_true: {y_true}")
-        gradients =  [[Decimal('1') if y_pred[i][j] > y_true[i][j] else Decimal('-1') for j in range(len(y_pred[i]))] for i in range(len(y_pred))]
-
-        #print(f"gradients: {gradients}")
-        #input()
+        gradients = [[2 * (y_pred[i][j] - y_true[i][j]) for j in range(len(y_pred[i]))] for i in range(len(y_pred))]
         return gradients
-
+    
 class Optimizer:
     def __init__(self, params, lr):
         self.params = params
@@ -685,119 +720,88 @@ class Optimizer:
                 param[k] -= self.lr * grad[k]
 
 class Adam(Optimizer):
+    # Reviewed fully. there are no issues.
     def __init__(self, params,lr, beta1=0.9, beta2=0.999, epsilon=1e-8):
         super().__init__(params,lr)
-        self.parameters = self.params
-        self.beta1 = Decimal(str(beta1))
-        self.beta2 = Decimal(str(beta2))
+        self.parameters = params
+        self.beta1 = Decimal(beta1)
+        self.beta2 = Decimal(beta2)
         self.epsilon = Decimal(str(epsilon))
         self.lr = Decimal(lr)
-        self.m = create_zeros_structure(self.params)        
-        self.v = create_zeros_structure(self.params)
+        self.m = create_zeros_structure(self.parameters)        
+        self.v = create_zeros_structure(self.parameters)
 
         self.t = 0
 
-    def step(self, gradients):
+    def step(self, input_gradients):         
         self.t += 1
-        for i in range(len(self.parameters)):
-            grad_layer_weights = gradients[i][0]
-            #print("list_shape(grad_layer_weights):",list_shape(grad_layer_weights)) 
-            param_layer_weights = self.parameters[i][0]            
-            m_layer_weights = self.m[i][0]
-            #print("list_shape(m_layer_weights):",list_shape(m_layer_weights))            
-            v_layer_weights = self.v[i][0]
+        for b in range(len(self.parameters)):
+            network = self.parameters[b]
+            gradients = input_gradients[b]  
+ 
+            for i in range(len(network)):
+                grad_layer_weights = deepcopy(gradients[i][0])
+                param_layer_weights = deepcopy(network[i][0])
+ 
+                # For biases
+                grad_layer_biases = deepcopy(gradients[i][1])
+                param_layer_biases = deepcopy(network[i][1])
 
-            # For biases
-            grad_layer_biases = gradients[i][1]
-            param_layer_biases = self.parameters[i][1]
-            m_layer_biases = self.m[i][1]
-            v_layer_biases = self.v[i][1]
-
-            #items = count_elements(grad_layer_weights)
-            if isinstance(grad_layer_weights[0],Decimal):
-                for k in range(len(grad_layer_weights)):             
-                    grad_weights = grad_layer_weights[k]
-                    
-                    #print("grad_weights shape:", list_shape(grad_weights))
-                    #print("m_layer_weights[k]:", m_layer_weights[k])
-                    #print("m_layer_weights[k] shape:", list_shape(m_layer_weights[k]))
-                    # Update first and second moment estimates for weights
-                    m_layer_weights[k] = self.beta1 * m_layer_weights[k] + (1 - self.beta1) * grad_weights
-                    v_layer_weights[k] = self.beta2 * v_layer_weights[k] + (1 - self.beta2) * (grad_weights ** 2)
+                for k in range(len(self.m[b][i][0])):                    
+                    self.m[b][i][0][k] = self.beta1 * self.m[b][i][0][k] + (1 - self.beta1) * grad_layer_weights[k]                  
+                    self.v[b][i][0][k] = self.beta2 * self.v[b][i][0][k] + (1 - self.beta2) * (grad_layer_weights[k] ** 2)
 
                     # Compute bias-corrected first and second moment estimates for weights
-                    m_hat_weights = m_layer_weights[k] / (1 - self.beta1 ** self.t)
-                    v_hat_weights = v_layer_weights[k] / (1 - self.beta2 ** self.t)
+                    m_hat_weights = self.m[b][i][0][k] / (1 - self.beta1 ** self.t)
+                    v_hat_weights = self.v[b][i][0][k] / (1 - self.beta2 ** self.t)
 
                     # Update weights
-                    param_layer_weights[k] -= self.lr * m_hat_weights / ((v_hat_weights).sqrt() + self.epsilon)
+                    param_layer_weights[k] = param_layer_weights[k] - (self.lr * m_hat_weights) / ((v_hat_weights).sqrt() + self.epsilon)                  
 
                 for k in range(len(grad_layer_biases)):
-                    grad_biases = grad_layer_biases[k]
                     # Update first and second moment estimates for biases
-                    m_layer_biases[k] = self.beta1 * m_layer_biases[k] + (1 - self.beta1) * grad_biases
-                    v_layer_biases[k] = self.beta2 * v_layer_biases[k] + (1 - self.beta2) * (grad_biases ** 2)
+                    self.m[b][i][1][k] = self.beta1 * self.m[b][i][1][k] + (1 - self.beta1) * grad_layer_biases[k]
+                    self.v[b][i][1][k] = self.beta2 * self.v[b][i][1][k] + (1 - self.beta2) * (grad_layer_biases[k] ** 2)
 
                     # Compute bias-corrected first and second moment estimates for biases
-                    m_hat_biases = m_layer_biases[k] / (1 - self.beta1 ** self.t)
-                    v_hat_biases = v_layer_biases[k] / (1 - self.beta2 ** self.t)
+                    m_hat_biases = self.m[b][i][1][k] / (1 - self.beta1 ** self.t)
+                    v_hat_biases = self.v[b][i][1][k] / (1 - self.beta2 ** self.t)
 
                     # Update biases
-                    param_layer_biases[k] -= self.lr * m_hat_biases / ((v_hat_biases).sqrt() + self.epsilon)     
-            else:
-                for k in range(len(grad_layer_weights)):
-                    grad_weights = grad_layer_weights[k][0]
-                    grad_biases = grad_layer_biases[k][0]
-                    if isinstance(grad_weights,list):                                     
-                        for z in range(len(grad_weights)):                            
-                            # Update first and second moment estimates for weights
-                            m_layer_weights[k][0][z] = self.beta1 * m_layer_weights[k][0][z] + (1 - self.beta1) * grad_weights[z]
-                            v_layer_weights[k][0][z] = self.beta2 * v_layer_weights[k][0][z] + (1 - self.beta2) * (grad_weights[z] ** 2)
+                    param_layer_biases[k] = param_layer_biases[k] -  (self.lr * m_hat_biases) / ((v_hat_biases).sqrt() + self.epsilon)
+                
+                self.parameters[b][i][0] = deepcopy(param_layer_weights)
+                self.parameters[b][i][1] = deepcopy(param_layer_biases)
 
-                            # Compute bias-corrected first and second moment estimates for weights
-                            m_hat_weights = m_layer_weights[k][0][z] / (1 - self.beta1 ** self.t)
-                            v_hat_weights = v_layer_weights[k][0][z] / (1 - self.beta2 ** self.t)
+class SGD(Optimizer):
+    def __init__(self, params, lr):
+        super().__init__(params, lr)
+        self.parameters = params
+        self.lr = Decimal(lr)
 
-                            # Update weights
-                            param_layer_weights[k][0][z] -= self.lr * m_hat_weights / ((v_hat_weights).sqrt() + self.epsilon)
+    def step(self, input_gradients):
+        for b in range(len(self.parameters)):
+            network = self.parameters[b]
+            gradients = input_gradients[b]
+            for i in range(len(network)):
+                grad_layer_weights = gradients[i][0]
+                param_layer_weights = network[i][0]
 
-                        # Update first and second moment estimates for biases
-                        m_layer_biases[k] = self.beta1 * m_layer_biases[k] + (1 - self.beta1) * grad_biases
-                        v_layer_biases[k] = self.beta2 * v_layer_biases[k] + (1 - self.beta2) * (grad_biases ** 2)
+                # For biases
+                grad_layer_biases = gradients[i][1]
+                param_layer_biases = network[i][1]
 
-                        # Compute bias-corrected first and second moment estimates for biases
-                        m_hat_biases = m_layer_biases[k]/ (1 - self.beta1 ** self.t)
-                        v_hat_biases = v_layer_biases[k] / (1 - self.beta2 ** self.t)
+                for k in range(len(grad_layer_weights)):                
+                    # Update weights
+                    param_layer_weights[k][0] -= self.lr * grad_layer_weights[k][0]
 
-                        # Update biases
-                        param_layer_biases[k] -= self.lr * m_hat_biases / ((v_hat_biases).sqrt() + self.epsilon)
-                    
-                    else:
-                        # Update first and second moment estimates for weights
-                        m_layer_weights[k][0] = self.beta1 * m_layer_weights[k][0] + (1 - self.beta1) * grad_weights
-                        v_layer_weights[k][0] = self.beta2 * v_layer_weights[k][0] + (1 - self.beta2) * (grad_weights ** 2)
+                for k in range(len(grad_layer_biases)):
+                    # Update biases
+                    param_layer_biases[k][0] -= self.lr * grad_layer_biases[k][0]
+                
+                network[i][0] = param_layer_weights
+                network[i][1] = param_layer_biases
 
-                        # Compute bias-corrected first and second moment estimates for weights
-                        m_hat_weights = m_layer_weights[k][0] / (1 - self.beta1 ** self.t)
-                        v_hat_weights = v_layer_weights[k][0] / (1 - self.beta2 ** self.t)
-
-                        # Update weights
-                        param_layer_weights[k][0] -= self.lr * m_hat_weights / ((v_hat_weights).sqrt() + self.epsilon)
-
-                        # Update first and second moment estimates for biases
-                        m_layer_biases[k][0] = self.beta1 * m_layer_biases[k][0] + (1 - self.beta1) * grad_biases
-                        v_layer_biases[k][0] = self.beta2 * v_layer_biases[k][0] + (1 - self.beta2) * (grad_biases ** 2)
-
-                        # Compute bias-corrected first and second moment estimates for biases
-                        m_hat_biases = m_layer_biases[k][0] / (1 - self.beta1 ** self.t)
-                        v_hat_biases = v_layer_biases[k][0] / (1 - self.beta2 ** self.t)
-
-                        # Update biases
-                        param_layer_biases[k][0] -= self.lr * m_hat_biases / ((v_hat_biases).sqrt() + self.epsilon)
-            
-            self.parameters[i][0] = param_layer_weights
-            self.parameters[i][1] = param_layer_biases
-    
 def decimal_multiply_list(decimal_value, decimal_list):
     return [decimal_value * item for item in decimal_list]
 
@@ -847,6 +851,12 @@ def leaky_relu(x, alpha=0.01):
         for example in x
     ]
 
+def leaky_relu_2d(x, alpha=0.01):
+    return [
+        [max(Decimal(alpha) * element, element) for element in row]
+        for row in x
+    ]
+
 def count_elements(lst):
     if isinstance(lst, list):
         return sum(count_elements(sublist) for sublist in lst)
@@ -859,77 +869,75 @@ def create_zeros_structure(params):
     else:
         return Decimal(0)
 
-class mixedNetwork2(NeuralNetwork):
-    def __init__(self,insize,outsize,hiddennodes):
-        super().__init__()
-        self.inputLayer1 = Linear(insize, hiddennodes*3)
-        self.layers.append(self.inputLayer1)
-        self.convlayersNum = 5
-        self.convlayers = []
-        for i in range(self.convlayersNum):
-            self.convlayers.append(Conv1D(3,3,3,1,1))
-            self.layers.append(self.convlayers[i])
+class mixedNetwork3(NeuralNetwork):
+    def __init__(self,insize,outsize,hiddennodes,linear=3):
+        super().__init__()   
 
-       
-        self.transformer1 = TransformerLayer(hiddennodes*3,10,hiddennodes*3)
-        self.layers.append(self.transformer1)
+        #Network 1
+        self.inputLayer = Linear(insize, hiddennodes)
+        self.layers.append(self.inputLayer)
 
-        self.transformer2 = TransformerLayer(hiddennodes*3,10,hiddennodes*3)
-        self.layers.append(self.transformer2)
+        self.hidden1 = Linear(hiddennodes, hiddennodes)
+        self.layers.append(self.hidden1)
+        self.hidden2 = Linear(hiddennodes, hiddennodes)
+        self.layers.append(self.hidden2)
+        self.hidden3 = Linear(hiddennodes, 2)
+        self.layers.append(self.hidden3)
 
-        self.transformer3 = TransformerLayer(hiddennodes*3,10,hiddennodes*3)
-        self.layers.append(self.transformer3)
 
-        self.transformer4 = TransformerLayer(hiddennodes*3,10,hiddennodes*3)
-        self.layers.append(self.transformer4)
+        self.hidden4 = Linear(2, 2)
+        self.layers.append(self.hidden4)
+        self.hidden5 = Linear(2, 2)
+        self.layers.append(self.hidden5)
+        self.hidden6 = Linear(2, hiddennodes)
+        self.layers.append(self.hidden6)
 
-        self.outLayer1 = Linear(hiddennodes*3, hiddennodes)
-        self.layers.append(self.outLayer1)
-
-        self.outLayer2 = Linear(hiddennodes, outsize)
-        self.layers.append(self.outLayer2)
+        
+        self.out = Linear(hiddennodes, 10)
+        self.layers.append(self.out)
+        
+        self.networks.append(self.layers)
 
     def forward(self,x):
-        nn_input1 = self.inputLayer1.forward(x)
+        nn_input = self.inputLayer.forward(x)    
         
-        #print(list_shape(nn_input1))
+        nn_hidden = self.hidden1.forward(nn_input)  
+        nn_hidden = self.hidden2.forward(nn_hidden) 
+        nn_hidden = self.hidden3.forward(nn_hidden)
 
-        nn_input = []
-        for example in nn_input1:
-            featureList = []
-            featuresNum = int(len(example)/ 3)
-            featuresStart = 0
-            featuresEnd = featuresStart +  featuresNum
-            for i in range(3):                                
-                featureList.append(example[featuresStart:featuresEnd])
-                featuresStart = featuresStart +  featuresNum
-                featuresEnd = featuresStart +  featuresNum
-            nn_input.append(featureList)
-        
-        nn_conv = nn_input
-        for i in range(self.convlayersNum):
-            nn_conv = self.convlayers[i].forward(nn_conv)
-        
-        
-        convOut = []
-        for i in range(len(nn_conv)):
-            features = []
-            for m in range(len(nn_conv[0])):
-                for item in nn_conv[i][m]:
-                    features.append(item)
-            convOut.append(features)
-        
-        # Convert the shape to (1, 300, 1)
-        #convOut = [[[x] for x in inner_list] for inner_list in convOut]
+        nn_hidden = self.hidden4.forward(nn_hidden)
+        nn_hidden = self.hidden5.forward(nn_hidden)
+        nn_hidden = self.hidden6.forward(nn_hidden)
+     
+        nn_out = self.out.forward(nn_hidden) 
+        out = []
+        for row in  nn_out:
+            out.append([sum(row)])
+        return out
 
-        nn_transfrom = self.transformer1.forward(convOut)
-        nn_transfrom = self.transformer2.forward(nn_transfrom)
-        nn_transfrom = self.transformer3.forward(nn_transfrom)
-        nn_transfrom = self.transformer4.forward(nn_transfrom)
+    def backward(self, grad_output):      
+        network_gradients = []
+        for i in range(len(self.networks)):
+            network_grad_output = []
+            gradients = []
+            for z in range(len(self.networks[i][-1].input)):
+                temp = []
+                for g in range(len(self.networks[i][-1].weights)):
+                    temp.append(grad_output[z][0])
+                network_grad_output.append(temp)
+            grad_input, grad_weights, grad_bias = self.networks[i][-1].backward(network_grad_output)
+            gradients.append([flatten_nested_structure(grad_weights), flatten_nested_structure(grad_bias)])
 
-        outLayer1 = self.outLayer1.forward(nn_transfrom)
-        outLayer2 = self.outLayer2.forward(outLayer1)  
-        return outLayer2
+            for layer_idx in reversed(range(len(self.networks[i]) - 1)):
+                layer = self.networks[i][layer_idx]
+    
+                grad_input, grad_weights, grad_bias = layer.backward(grad_input)
+                gradients.append([flatten_nested_structure(grad_weights), flatten_nested_structure(grad_bias)])
+
+            network_gradients.append(gradients[::-1] )
+
+        return network_gradients 
+
 
 def decimal_matrix_multiply(matrix1, matrix2):
     if len(matrix1) == 0 or len(matrix2) == 0:
@@ -947,13 +955,19 @@ def decimal_matrix_multiply(matrix1, matrix2):
             for b in range(len(matrix1))
         ]
     else:
-        result = [
-            [
-                sum(matrix1[i][k] * matrix2[k][j] for k in range(len(matrix2)))
-                for j in range(len(matrix2[0]))
+        rows1, cols1 = len(matrix1), len(matrix1[0])
+        rows2, cols2 = len(matrix2), len(matrix2[0])
+
+        if cols1 == 1 and rows1 == rows2:  # Check for the (2,1) by (2,1) case
+            result = [[sum(matrix1[i][0] * matrix2[j][0] for i in range(rows1))] for j in range(rows2)]
+        else:
+            result = [
+                [
+                    sum(matrix1[i][k] * matrix2[k][j] for k in range(len(matrix2)))
+                    for j in range(len(matrix2[0]))
+                ]
+                for i in range(len(matrix1))
             ]
-            for i in range(len(matrix1))
-        ]
     return result
 
 def decimal_matrix_add(matrix1, matrix2):
@@ -993,3 +1007,80 @@ def flatten_nested_structure(structure):
     _flatten(structure)
     return result
 
+def tetration(base_list, height_list):
+    if isinstance(base_list, Decimal) and isinstance(height_list, int):
+        return _tetration_single(base_list, height_list)
+
+    if isinstance(height_list, list):
+        if len(base_list) != len(height_list):
+            raise ValueError("Lists must have the same shape")
+        data = []
+        for base, height in zip(base_list, height_list):
+            data_example = []
+            for b, h in zip(base, height):
+                data_example.append(_tetration_single(b, h))
+            data.append(data_example)
+        return data
+    else:
+        data = []
+        for base in base_list:
+            data.append([_tetration_single(b, height_list) for b in base])
+        return data
+
+def _tetration_single(base, height):
+    int_height = int(height)  # Cast height to integer
+    if int_height <= 0:
+        return Decimal(1)
+    result = base
+    for _ in range(int_height - 1):
+        result = base ** result
+    return result
+
+def sigmoid(x):
+    if isinstance(x, list):
+        return [sigmoid(item) for item in x]
+    return 1 / (1 + Decimal(math.exp(-x)))
+
+def sin_decimal(x):
+    if isinstance(x, list):
+        return [sin_decimal(elem) for elem in x]
+    else:
+        x = Decimal(x) % (2 * Decimal(math.pi))
+        n, term, total = 0, x, x
+
+        while abs(term) > Decimal(1e-28):
+            n += 1
+            term *= -x * x / ((2 * n) * (2 * n + 1))
+            total += term
+
+        return total
+
+def log_decimal(x, base=Decimal(math.e)):
+    if x <= 0:
+        raise ValueError("logarithm is undefined for non-positive values")
+    
+    # Use natural logarithm for the base e (default)
+    if base == Decimal(math.e):
+        n, term, total = 0, (x - 1), (x - 1)
+
+        while abs(term) > Decimal(1e-28):
+            n += 1
+            term *= - (x - 1) / n
+            total += term
+
+        return total
+
+    # Calculate logarithm for other bases using the change of base formula
+    else:
+        return log_decimal(x) / log_decimal(base)
+
+    sorted_numbers = sorted(numbers)
+    n = len(sorted_numbers)
+    mid = n // 2
+
+    if n % 2 == 0:  # Even number of elements
+        median = (sorted_numbers[mid - 1] + sorted_numbers[mid]) / 2
+    else:  # Odd number of elements
+        median = sorted_numbers[mid]
+
+    return median
