@@ -1,4 +1,4 @@
-import Classes.Altial as nn
+import Classes.NN_Module as nn
 import math
 import random
 import statistics
