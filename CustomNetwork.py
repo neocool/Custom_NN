@@ -1,4 +1,4 @@
-import Classes.NN_Module as nn
+import NN_Module as nn
 import math
 import random
 import statistics
